@@ -2,14 +2,16 @@
 title: "Final Project Analysis"
 author: "Jinhong Yu"
 date: "2025-05-14"
-output: html_document
+output:
+  pdf_document: default
+  html_document: default
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-# Statistical Analysis for **Student Habits vs. Academic Performance**
+# Statistical Analysis for Student Habits vs. Academic Performance
 
 ## 1. Introduction
 
@@ -33,7 +35,9 @@ library("ggplot2")
 library("corrplot")
 library("lmtest")
 library("sandwich")
-
+library("leaps")
+library("glmnet")
+library("boot")
 ```
 
 ### 2.2 Load Dataset
@@ -181,4 +185,82 @@ We compared two linear regression models to predict exam scores: one assuming a 
 
 ## 5. Variable Selection & Hypothesis Testing
 
+### 5.1 Branch and Bound based on BIC
+
+Now, we have the regression model with 7 predictors. But the contribution from each variable is significantly different. We want to select less variables to have better model generalizibility as well as reduce the risk of overfitting.
+
+The first variable selection method applied was branch and bound based on BIC. The results showed that the best-performing subset included all 8 predictors, including the polynomial term for study hours. This suggests that each of the current variables contributes meaningfully to explaining variation in exam scores, and removing any one of them would result in a less optimal model. The adjusted R-squared is 0.9031.
+
+```{r}
+# Include the square term
+data$study_hours_squared <- data$study_hours_per_day^2
+
+subset_data <- data %>%
+  select(exam_score,
+         study_hours_per_day,
+         study_hours_squared,  
+         sleep_hours,
+         social_media_hours,
+         netflix_hours,
+         attendance_percentage,
+         exercise_frequency,
+         mental_health_rating)
+
+# Perform Branch and Bound
+model3 <- regsubsets(exam_score ~ ., data = subset_data, nvmax = 9, method = "exhaustive")
+summary(model3)
+sout <- summary(model3)
+print(sout$bic)
+which.min(sout$bic)
+
+```
+
+### 5.2 LASSO Variable Selection
+
+The second variable selection method used was LASSO regression. Based on cross-validation results, the model with the lowest prediction error included all eight predictors, including the polynomial term for study hours. A more parsimonious model selected using the 1-SE rule excluded the polynomial term and achieved a similar RMSE. However, as discussed in Chapter 2, omitting the polynomial term violates the assumption of linearity. Therefore, we retain all seven predictors along with the polynomial term in the final model to ensure both predictive performance and theoretical consistency.
+
+```{r}
+# Define predictor matrix and response
+x <- model.matrix(exam_score ~ study_hours_per_day + I(study_hours_per_day^2) + sleep_hours + social_media_hours + netflix_hours + attendance_percentage + exercise_frequency + mental_health_rating, data = data)[, -1]
+y <- data$exam_score
+
+# Cross-validated LASSO
+set.seed(123)
+lasso_cv <- cv.glmnet(x, y, alpha = 1, standardize = TRUE)
+plot(lasso_cv)
+model4 <- glmnet(x, y, alpha = 1, lambda = lasso_cv$lambda.min)
+coef(model4)
+model5 <- glmnet(x, y, alpha = 1, lambda = lasso_cv$lambda.1se)
+coef(model5)
+```
+
+### 5.3 Cross-Validation
+
+We fit a linear regression model using all 8 predictors. All variables were statistically significant at the 0.001 level. The model achieved an adjusted R² of approximately 0.903, indicating that it explains over 90% of the variance in the response. To assess generalization performance, we performed 10-fold cross-validation. The cross-validated mean squared error (MSE) was 27.97, corresponding to a root mean squared error (RMSE) of 5.29. This suggests that the model's predictions deviate from actual exam scores by about 5.3 points on average, demonstrating both high accuracy and reliability.
+
+```{r}
+model_cv <- glm(exam_score ~ ., data = subset_data)
+summary(model_cv)
+err_cv <- cv.glm(subset_data, model_cv, K=10)$delta[1]
+err_cv
+rmse_cv <- sqrt(err_cv)
+rmse_cv
+```
+
 ## 6. Feature Impact Analysis
+
+### 6.1 CI for Significant Coefficients
+
+```{r}
+coefci(model_cv, level = .95, vcov. = vcovHC(model_cv, type = "HC3"))
+```
+
+### 6.2 Interpretation of Features
+
+The final regression model included 8 predictors, all of which were statistically significant at the 0.001 level. The coefficient for study_hours_per_day was 11.74, indicating that each additional hour of study is associated with an average increase of 11.74 points in exam score, though this effect is tempered by the negative squared term (–0.30), reflecting diminishing returns at higher study durations. Lifestyle factors also showed meaningful impacts: each hour of sleep was associated with a 2.01-point increase, while each hour of social_media or Netflix use corresponded to 2.60 and 2.28-point decreases, respectively. Attendance_percentage, exercise_frequency, and mental_health_rating all had positive effects, with coefficients of 0.15, 1.48, and 1.95, respectively.
+
+These results highlight that productive study habits and well-being factors such as sleep, mental health, and physical activity are positively related to academic performance, while excessive screen time has a negative impact.
+
+### 6.3 Future Work
+
+While this study effectively identified key lifestyle factors associated with academic performance using linear regression, future work could explore nonlinear or interaction effects in greater depth using more flexible models such as generalized additive models (GAMs) or tree-based methods like random forests.
