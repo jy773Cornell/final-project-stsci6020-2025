@@ -9,22 +9,176 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-## R Markdown
+# Statistical Analysis for **Student Habits vs. Academic Performance**
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+## 1. Introduction
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+This analysis investigates how various lifestyle habits influence academic performance among students, using a synthetic dataset of 1,000 records from [Kaggle](https://www.kaggle.com/datasets/jayaantanaath/student-habits-vs-academic-performance?resource=download). The dataset includes a continuous target variable of final exam score, alongside 15+ features such as study hours, sleep duration, diet quality, social media usage, and mental health.
 
-```{r cars}
-summary(cars)
+The goal is to apply linear regression analysis to:
+
+1.  Explore the relationships between lifestyle variables and academic success
+2.  Check and address regression assumptions
+3.  Select meaningful predictors and construct the prediction models
+4.  Quantify and interpret the impact of key features
+
+## 2. Exploratory Data Analysis
+
+### 2.1 Prepare Packages
+
+```{r}
+library("readr")
+library("dplyr")
+library("ggplot2")
+library("corrplot")
+library("lmtest")
+library("sandwich")
+
 ```
 
-## Including Plots
+### 2.2 Load Dataset
 
-You can also embed plots, for example:
-
-```{r pressure, echo=FALSE}
-plot(pressure)
+```{r}
+data <- read_csv("https://raw.githubusercontent.com/jy773Cornell/final-project-stsci6020-2025/refs/heads/main/data/student_habits_performance.csv")
+colnames(data)
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+In this dataset, several variables are categorical variables. We converted those variables to factors.
+
+```{r}
+# Convert categorical variables to factors
+data <- data %>%
+  mutate(
+    gender = as.factor(gender),
+    part_time_job = as.factor(part_time_job),
+    diet_quality = as.factor(diet_quality),
+    parental_education_level = as.factor(parental_education_level),
+    internet_quality = as.factor(internet_quality), extracurricular_participation = as.factor(extracurricular_participation)
+  )
+
+# Show the data type for each variable
+data.frame(
+  Column = names(data),
+  Type = sapply(data, class)
+)
+
+```
+
+### 2.3 Visualization of Distributions and Relationships
+
+Based on the visualization plots, there are some preliminary findings:
+
+1.  study hours per day has the strongest positive relationship with exam scores.
+2.  Both social media usage and Netflix hours show a moderate negative correlation with exam scores.
+3.  Variables like mental health rating, exercise frequency, sleep hours, and attendance percentage all exhibit weak to modest positive associations with exam performance.
+4.  All the factor variable show very weak associations with exam scores. To build a model with parsimony, we will only consider above numerical variables as the initial predictors for later analysis.
+
+```{r}
+# Visualize the distribution and relationships with the exam score
+predictors <- data %>%
+  select(-exam_score) %>%
+  select(-student_id)
+
+for (var in names(predictors)) {
+  p <- ggplot(data, aes_string(x = var, y = "exam_score")) +
+    geom_point(alpha = 0.6, color = "steelblue") +
+    geom_smooth(method = "lm", se = TRUE, color = "darkred") +
+    labs(title = paste("exam_score vs", var),
+         x = var,
+         y = "Exam Score") +
+    theme_minimal()
+  
+  print(p)
+}
+```
+
+### 2.4 Data Cleaning and Preprocessing
+
+There is no missing values in the dataset and no further preprocessing at this step.
+
+```{r}
+colSums(is.na(data))
+```
+
+## 3. Regression Assumptions Verification
+
+### 3.1 Independence of Observation
+
+By the definition of this dataset, it is clear that each observation of this dataset is independent of others.
+
+### 3.2 Multicollinearity
+
+Before running the linear regression, we performed the Pearson correlation analysis first among the numerical predictors. And all values are between -0.05 and 0.05, indicating no strong correlations between any pairs of the tested predictors.
+
+```{r}
+numeric_predictors <- data %>%
+  select(where(is.numeric))
+
+cor_matrix <- cor(numeric_predictors, use = "complete.obs", method = "pearson")
+round(cor_matrix, 2)
+corrplot(cor_matrix, method = "color", type = "lower", tl.cex = 0.5)
+```
+
+### 3.3 Linearity & Homoscedasticity Assessment
+
+The plot of residuals vs. fitted is shown below. The red line shows a curved pattern, especially rising and then dropping on the right, suggesting that the relationship between predictors and outcome may not be fully linear. Also, the spread of residuals shrinks as fitted values increase. This indicates heteroscedasticity, violating the homoscedasticity assumption.
+
+```{r}
+# Fit the linear model
+model1 <- lm(exam_score ~ study_hours_per_day + sleep_hours + social_media_hours + netflix_hours + attendance_percentage + exercise_frequency + mental_health_rating, data = data)
+summary(model1)
+
+# Residuals vs Fitted
+plot(model1, which = 1)
+```
+
+### 3.4 Normality of Residuals
+
+The QQ plot is given below. The residuals follow the diagonal line closely with only slight deviation at the tails. Although a few outliers exist on both ends, the normality assumption is reasonably satisfied.
+
+```{r}
+# Normal Q-Q plot
+plot(model1, which = 2)
+```
+
+## 4. Assumption Violation Handling
+
+### 4.1 Polynomial Transformation
+
+Based the discussion from the last section, we need to handle the violated assumptions (linearity and heteroscedasticity) for the current model. study_hours_per_day shows a strong curved trend in the previous plot, so we will use a 2nd-degree polynomial for this variable to improve the model linearity. The red trend line is now flatter across the middle range of fitted values, indicating that the previously observed curved trend has been partially corrected.
+
+```{r}
+model2 <- lm(exam_score ~ poly(study_hours_per_day, 2, raw = TRUE) +
+                               social_media_hours +
+                               sleep_hours +
+                               netflix_hours +
+                               attendance_percentage +
+                               exercise_frequency +
+                               mental_health_rating,
+                 data = data)
+summary(model2)
+plot(model2, which=1)
+```
+
+### 4.2 Robust Standard Error
+
+With the new model, we ran the Breusch-Pagan test first, and got the p-value of 0.02 \< 0.05. Therefore, we reject the null hypothesis that residuals have constant variance .
+
+To handle the heteroscedasticity, we applied robust standard errors for valid inference in this model. While the coefficient estimates remained unchanged, the robust standard errors provide more reliable inference. All predictors remained statistically significant, confirming the robustness of the model’s findings.
+
+```{r}
+# Breusch-Pagan Test
+bptest(model2)
+
+# Replace the default with the robust standard errors
+coeftest(model2, vcov. = vcovHC(model2, type = "HC3"))
+
+```
+
+### 4.3 Model Comparison
+
+We compared two linear regression models to predict exam scores: one assuming a linear relationship with study hours and another including a 2nd-degree polynomial term to capture non-linearity. The polynomial model showed a slight improvement in fit, with a lower residual standard error (5.256 vs. 5.331) and a higher adjusted R-squared (0.9031 vs. 0.9004). The squared term was statistically significant (p \< 0.001), indicating diminishing returns to study time.
+
+## 5. Variable Selection & Hypothesis Testing
+
+## 6. Feature Impact Analysis
